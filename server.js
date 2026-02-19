@@ -33,11 +33,30 @@ async function testUrl(id) {
       validateStatus: () => true
     });
 
-    return res.status === 200;
-  } catch {
+    if (res.status === 200) {
+      console.log(`[OK] Segmento ${id} disponível`);
+      return true;
+    } else if (res.status === 404) {
+      console.log(`[404] Segmento ${id} não encontrado`);
+    } else if (res.status === 403) {
+      console.log(`[403] Acesso bloqueado ao segmento ${id}`);
+    } else {
+      console.log(`[${res.status}] Resposta inesperada para ${id}`);
+    }
+
+    return false;
+  } catch (err) {
+    if (err.code === "ECONNABORTED") {
+      console.log(`[TIMEOUT] Requisição para ${id} demorou demais`);
+    } else if (err.response && err.response.status === 403) {
+      console.log(`[403] Acesso bloqueado ao segmento ${id}`);
+    } else {
+      console.log(`[ERRO] Falha ao acessar ${id}:`, err.message);
+    }
     return false;
   }
 }
+
 
 // versão inteligente
 async function discoverNextSegment() {
