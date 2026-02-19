@@ -6,63 +6,77 @@ app.use(express.json());
 
 const PORT = 3000;
 
-// CONFIGURAÇÃO
 const BASE_URL = "http://lhkes.eug2hdnj.com/live/pt_ZXD22101FF080BC39_720p/";
 const FILE_PREFIX = "pt_ZXD22101FF080BC39_720p_shisui_";
 
-// Estado dinâmico
 let currentId = null;
 let mediaSequence = 1;
 let segments = [];
 const WINDOW_SIZE = 8;
 
 let intervalId = null;
+let lastCheck = 0;
 
-// ----------------------------------------
+// -----------------------------
 
 function buildTsUrl(id) {
   return `${BASE_URL}${FILE_PREFIX}${id}.ts`;
 }
 
-// testa se URL existe
+// agora usamos GET leve em vez de HEAD
 async function testUrl(id) {
   const url = buildTsUrl(id);
   try {
-    await axios.head(url, { timeout: 2000 });
-    return true;
+    const res = await axios.get(url, {
+      timeout: 2000,
+      responseType: "stream", // não baixa tudo
+      validateStatus: () => true
+    });
+
+    return res.status === 200;
   } catch {
     return false;
   }
 }
 
-// tenta descobrir próximo segmento
+// versão inteligente
 async function discoverNextSegment() {
   if (!currentId) return null;
 
-  const base = currentId + 5000;
+  const expected = currentId + 5000;
 
-  const candidates = [
-    base,
-    base - 1,
-    base + 1,
-    base - 2,
-    base + 2,
+  // 🔥 1️⃣ testa apenas o esperado
+  if (await testUrl(expected)) {
+    return expected;
+  }
+
+  // 🔎 2️⃣ só se falhar testa variações
+  const variations = [
+    expected - 1,
+    expected + 1,
+    expected - 2,
+    expected + 2,
   ];
 
-  for (let id of candidates) {
-    const ok = await testUrl(id);
-    if (ok) return id;
-    else console.log(`Segmento ${id} não encontrado.`);
+  for (let id of variations) {
+    if (await testUrl(id)) {
+      return id;
+    }
   }
 
   return null;
 }
 
-// atualização da playlist
 async function updatePlaylist() {
-  const nextId = await discoverNextSegment();
+  const now = Date.now();
 
+  // 🔥 garante 4 segundos entre testes reais
+  if (now - lastCheck < 4000) return;
+  lastCheck = now;
+
+  const nextId = await discoverNextSegment();
   if (!nextId) {
+    console.log("Nenhum novo segmento.");
     return;
   }
 
@@ -81,11 +95,10 @@ async function updatePlaylist() {
   console.log("Novo segmento:", nextId);
 }
 
-// ----------------------------------------
+// -----------------------------
 // ROTAS DE CONTROLE
-// ----------------------------------------
+// -----------------------------
 
-// definir currentId
 app.post("/set-current-id", (req, res) => {
   const { id } = req.body;
 
@@ -97,63 +110,54 @@ app.post("/set-current-id", (req, res) => {
   mediaSequence = 1;
   segments = [];
 
-  res.json({
-    message: "currentId atualizado",
-    currentId,
-  });
+  res.json({ message: "currentId atualizado", currentId });
 });
 
-// iniciar intervalo
 app.post("/start", (req, res) => {
   if (!currentId) {
     return res.status(400).json({ error: "Defina o currentId primeiro" });
   }
 
   if (intervalId) {
-    return res.json({ message: "Intervalo já está rodando" });
+    return res.json({ message: "Já está rodando" });
   }
 
   intervalId = setInterval(updatePlaylist, 1000);
-
-  res.json({ message: "Intervalo iniciado" });
+  res.json({ message: "Sincronização iniciada" });
 });
 
-// parar intervalo
 app.post("/stop", (req, res) => {
   if (!intervalId) {
-    return res.json({ message: "Intervalo não está rodando" });
+    return res.json({ message: "Não está rodando" });
   }
 
   clearInterval(intervalId);
   intervalId = null;
 
-  res.json({ message: "Intervalo parado" });
+  res.json({ message: "Sincronização parada" });
 });
 
-// status
 app.get("/status", (req, res) => {
   res.json({
     running: !!intervalId,
     currentId,
-    mediaSequence,
-    segmentsCount: segments.length,
+    segments: segments.length,
+    mediaSequence
   });
 });
 
-// ----------------------------------------
+// -----------------------------
 // ROTAS HLS
-// ----------------------------------------
+// -----------------------------
 
 app.get("/master.m3u8", (req, res) => {
   res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
 
-  const master = `#EXTM3U
+  res.send(`#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
 /live.m3u8
-`;
-
-  res.send(master);
+`);
 });
 
 app.get("/live.m3u8", (req, res) => {
@@ -173,7 +177,7 @@ app.get("/live.m3u8", (req, res) => {
   res.send(playlist);
 });
 
-// ----------------------------------------
+// -----------------------------
 
 app.listen(PORT, () => {
   console.log(`Servidor rodando em http://localhost:${PORT}`);
